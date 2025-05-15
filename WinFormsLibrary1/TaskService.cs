@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Threading;
 using System.Timers;
 using System.Xml.Serialization;
 
@@ -13,12 +12,14 @@ namespace TaskManagerLib
         private List<TaskItem> tasks = new();
         private string filePath = "tasks.xml";
         private System.Timers.Timer reminderTimer;
+        private System.Timers.Timer cleanupTimer;
         private int nextId = 1;
 
         public TaskService()
         {
             LoadTasks();
             StartReminderTimer();
+            StartCleanupTimer();
         }
 
         public List<TaskItem> GetTasks() => tasks;
@@ -36,21 +37,24 @@ namespace TaskManagerLib
             SaveTasks();
         }
 
-        public void UpdateTask(int id, string description, DateTime? deadline, bool? isCompleted)
+        public void UpdateTask(TaskItem selectedTask, string description, DateTime? deadline, bool? isCompleted)
         {
-            var task = tasks.FirstOrDefault(t => t.Id == id);
-            if (task == null) return;
+            if (selectedTask == null) return;
 
-            if (!string.IsNullOrWhiteSpace(description)) task.Description = description;
-            if (deadline.HasValue && deadline > DateTime.Now) task.Deadline = deadline.Value;
-            if (isCompleted.HasValue) task.IsCompleted = isCompleted.Value;
+            if (!string.IsNullOrWhiteSpace(description)) selectedTask.Description = description;
+            if (deadline.HasValue) selectedTask.Deadline = deadline.Value;
+
+            if (isCompleted.HasValue && isCompleted.Value != selectedTask.IsCompleted)
+            {
+                selectedTask.IsCompleted = isCompleted.Value;
+                selectedTask.CompletedAt = isCompleted.Value ? DateTime.Now : null;
+            }
 
             SaveTasks();
         }
 
-        public void DeleteTask(int id)
+        public void DeleteTask(TaskItem task)
         {
-            var task = tasks.FirstOrDefault(t => t.Id == id);
             if (task != null)
             {
                 tasks.Remove(task);
@@ -84,49 +88,39 @@ namespace TaskManagerLib
             {
                 foreach (var task in tasks.Where(t => !t.IsCompleted))
                 {
-                    var left = task.Deadline - DateTime.Now;
-
-                    if (left.TotalMinutes <= 60 && left.TotalMinutes > 55 && !task.Reminded1Hr)
+                    var timeLeft = task.Deadline - DateTime.Now;
+                    if (timeLeft.TotalMinutes <= 60 && !task.Reminded1Hr)
                     {
+                        Console.WriteLine($"Reminder: 1 hour left for task {task.Description}");
                         task.Reminded1Hr = true;
                     }
-
-                    if (left.TotalMinutes <= 5 && left.TotalMinutes > 0 && !task.Reminded5Min)
+                    if (timeLeft.TotalMinutes <= 5 && !task.Reminded5Min)
                     {
+                        Console.WriteLine($"Reminder: 5 minutes left for task {task.Description}");
                         task.Reminded5Min = true;
                     }
-
-                    if (left.TotalSeconds <= 0 && !task.RemindedDue)
+                    if (timeLeft.TotalSeconds <= 0 && !task.RemindedDue)
                     {
+                        Console.WriteLine($"Task {task.Description} is due now!");
                         task.RemindedDue = true;
-
-                        var input = string.Empty;
-                        var inputThread = new Thread(() => input = Console.ReadLine());
-                        inputThread.Start();
-
-                        var success = inputThread.Join(15000);
-                        if (success && DateTime.TryParse(input, out var newDeadline) && newDeadline > DateTime.Now)
-                        {
-                            task.Deadline = newDeadline;
-                            task.Reminded1Hr = false;
-                            task.Reminded5Min = false;
-                            task.RemindedDue = false;
-                        }
-                        else
-                        {
-                            task.Deadline = DateTime.Now.AddHours(1);
-                            task.Reminded1Hr = false;
-                            task.Reminded5Min = false;
-                            task.RemindedDue = false;
-                        }
                     }
                 }
-
-                SaveTasks();
             };
-
-            reminderTimer.AutoReset = true;
             reminderTimer.Start();
+        }
+
+        private void StartCleanupTimer()
+        {
+            cleanupTimer = new System.Timers.Timer(60000);
+            cleanupTimer.Elapsed += (sender, e) =>
+            {
+                var old = tasks.Where(t => t.IsCompleted && t.CompletedAt != null && (DateTime.Now - t.CompletedAt.Value).TotalHours > 1).ToList();
+                foreach (var task in old)
+                    tasks.Remove(task);
+
+                if (old.Any()) SaveTasks();
+            };
+            cleanupTimer.Start();
         }
     }
 }
